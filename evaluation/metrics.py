@@ -1,4 +1,3 @@
-```python
 import numpy as np
 from sklearn.metrics import mean_squared_error
 
@@ -39,4 +38,4 @@ def split_rmse(y_true, y_pred, threshold=PEAK_THRESHOLD):
         "Overall_RMSE": overall_rmse,
         "Overall_RMSE_Percent": overall_rmse / MAX_STREAMFLOW * 100
     }
-```
+
