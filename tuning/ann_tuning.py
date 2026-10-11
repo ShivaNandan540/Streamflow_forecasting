@@ -2,7 +2,7 @@ from itertools import product
 
 import numpy as np
 
-from models.ann import build_ann
+from models.ann_feed_forward import build_ann
 from preprocessing.feature_engineering import create_lag_features
 from preprocessing.normalization import normalize_train_validation
 from evaluation.metrics import rmse
@@ -10,11 +10,11 @@ from evaluation.metrics import rmse
 
 def tune_ann(
     df,
-    rainfall_lags=(2, 3, 4),
-    streamflow_lags=(2, 3, 4),
-    hidden_sizes=(8, 12, 16),
-    learning_rates=(0.001, 0.005, 0.009),
-    epochs=50
+    rainfall_lags=range(2, 8),
+    streamflow_lags=range(2, 8),
+    hidden_sizes=(8, 12, 16, 24, 31),
+    learning_rate=0.009,
+    epochs=200
 ):
     results = []
     best = None
@@ -24,16 +24,14 @@ def tune_ann(
         len(rainfall_lags)
         * len(streamflow_lags)
         * len(hidden_sizes)
-        * len(learning_rates)
     )
 
     count = 0
 
-    for rlag, slag, hidden, lr in product(
+    for rlag, slag, hidden in product(
         rainfall_lags,
         streamflow_lags,
-        hidden_sizes,
-        learning_rates
+        hidden_sizes
     ):
         count += 1
 
@@ -42,7 +40,7 @@ def tune_ann(
             f"Rainfall lag={rlag}, "
             f"Streamflow lag={slag}, "
             f"Hidden={hidden}, "
-            f"LR={lr}"
+            f"LR={learning_rate}"
         )
 
         # Create lagged input features
@@ -71,20 +69,20 @@ def tune_ann(
             X_val_s,
             y_train_s,
             y_val_s,
-            _,
-            y_scaler
+            scales
         ) = normalize_train_validation(
             X_train,
             X_val,
             y_train,
-            y_val
+            y_val,
+            feature_cols
         )
 
         # Build ANN
         model = build_ann(
             len(feature_cols),
             hidden,
-            lr
+            learning_rate
         )
 
         # Train ANN
@@ -103,9 +101,7 @@ def tune_ann(
         ).ravel()
 
         # Convert predictions back to original streamflow units
-        pred = y_scaler.inverse_transform(
-            pred_s.reshape(-1, 1)
-        ).ravel()
+        pred = pred_s * scales["streamflow_max"]
 
         # Calculate validation RMSE
         score = rmse(y_val, pred)
@@ -119,7 +115,8 @@ def tune_ann(
             "rainfall_lag": rlag,
             "streamflow_lag": slag,
             "hidden_size": hidden,
-            "learning_rate": lr,
+            "learning_rate": learning_rate,
+            "tuning_epochs": epochs,
             "validation_rmse": score
         }
 

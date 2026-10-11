@@ -1,7 +1,7 @@
 import os
 import matplotlib.pyplot as plt
 
-def save_plots(dates, actual, predicted, history, out_dir="outputs/plots"):
+def save_plots(dates, actual, predicted, history, out_dir="outputs/plots", model_name="ANN"):
     os.makedirs(out_dir, exist_ok=True)
 
     plt.figure(figsize=(12, 5))
@@ -30,8 +30,8 @@ def save_plots(dates, actual, predicted, history, out_dir="outputs/plots"):
         plt.plot(history.history["loss"], label="Training loss")
         plt.xlabel("Epoch")
         plt.ylabel("MSE Loss")
-        plt.title("ANN Training Loss")
+        plt.title(f"{model_name} Training Loss")
         plt.legend()
         plt.tight_layout()
-        plt.savefig(os.path.join(out_dir, "ann_training_loss.png"), dpi=200)
+        plt.savefig(os.path.join(out_dir, f"{model_name.lower()}_training_loss.png"), dpi=200)
         plt.close()
