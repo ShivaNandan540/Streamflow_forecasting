@@ -1,12 +1,14 @@
 import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import json
+import numpy as np
 import pandas as pd
 
 from preprocessing.cleaning import clean_data
-from preprocessing.feature_engineering import create_lag_features
+from preprocessing.feature_engineering import create_lag_features, create_lstm_features
 from preprocessing.normalization import normalize_train_validation
-from models.ann import build_ann
+from models.ann_feed_forward import build_ann
+from models.lstm import build_lstm
 from models.linear_regression import build_linear_regression
 from models.random_forest import build_random_forest
 from tuning.ann_tuning import tune_ann
@@ -58,7 +60,9 @@ def main():
     y_train = train["Target_Streamflow"].to_numpy()
     y_val = val["Target_Streamflow"].to_numpy()
 
-    X_train_s, X_val_s, y_train_s, y_val_s, x_scaler, y_scaler =         normalize_train_validation(X_train, X_val, y_train, y_val)
+    X_train_s, X_val_s, y_train_s, y_val_s, scales = normalize_train_validation(
+        X_train, X_val, y_train, y_val, feature_cols
+    )
 
     # Final ANN with selected hyperparameters.
     ann = build_ann(
@@ -75,9 +79,8 @@ def main():
     )
 
     ann_pred_s = ann.predict(X_val_s, verbose=0).ravel()
-    ann_pred = y_scaler.inverse_transform(
-        ann_pred_s.reshape(-1,1)
-    ).ravel()
+    # Streamflow cannot be negative; apply this physical constraint before evaluation.
+    ann_pred = np.maximum(ann_pred_s * scales["streamflow_max"], 0.0)
 
     ann_metrics = split_rmse(y_val, ann_pred)
 
@@ -85,21 +88,53 @@ def main():
     lr = build_linear_regression()
     lr.fit(X_train_s, y_train_s)
     lr_pred_s = lr.predict(X_val_s)
-    lr_pred = y_scaler.inverse_transform(
-        lr_pred_s.reshape(-1,1)
-    ).ravel()
+    lr_pred = np.maximum(lr_pred_s * scales["streamflow_max"], 0.0)
     lr_metrics = split_rmse(y_val, lr_pred)
 
     rf = build_random_forest()
     rf.fit(X_train_s, y_train_s)
     rf_pred_s = rf.predict(X_val_s)
-    rf_pred = y_scaler.inverse_transform(
-        rf_pred_s.reshape(-1,1)
-    ).ravel()
+    rf_pred = np.maximum(rf_pred_s * scales["streamflow_max"], 0.0)
     rf_metrics = split_rmse(y_val, rf_pred)
+
+    # Paper's best LSTM configuration uses equal five-day rainfall/flow sequences.
+    lstm_lag = 5
+    lstm_hidden_size = 12
+    lstm_learning_rate = 0.001
+    X_lstm, y_lstm, lstm_dates = create_lstm_features(df, lstm_lag)
+    lstm_train_mask = lstm_dates.year <= 2007
+    lstm_val_mask = lstm_dates.year >= 2008
+    X_lstm_train, X_lstm_val = X_lstm[lstm_train_mask], X_lstm[lstm_val_mask]
+    y_lstm_train, y_lstm_val = y_lstm[lstm_train_mask], y_lstm[lstm_val_mask]
+    (
+        X_lstm_train_s,
+        X_lstm_val_s,
+        y_lstm_train_s,
+        _,
+        lstm_scales,
+    ) = normalize_train_validation(
+        X_lstm_train,
+        X_lstm_val,
+        y_lstm_train,
+        y_lstm_val,
+        ["Rainfall", "Streamflow"],
+    )
+
+    lstm = build_lstm(lstm_lag, lstm_hidden_size, lstm_learning_rate)
+    lstm_history = lstm.fit(
+        X_lstm_train_s,
+        y_lstm_train_s,
+        epochs=200,
+        batch_size=32,
+        verbose=0,
+    )
+    lstm_pred_s = lstm.predict(X_lstm_val_s, verbose=0).ravel()
+    lstm_pred = np.maximum(lstm_pred_s * lstm_scales["streamflow_max"], 0.0)
+    lstm_metrics = split_rmse(y_lstm_val, lstm_pred)
 
     comparison = pd.DataFrame([
         {"Model": "ANN", **ann_metrics},
+        {"Model": "LSTM", **lstm_metrics},
         {"Model": "Linear Regression", **lr_metrics},
         {"Model": "Random Forest", **rf_metrics}
     ])
@@ -117,15 +152,40 @@ def main():
     with open("outputs/results/best_ann_config.json", "w") as f:
         json.dump(best, f, indent=4)
 
+    with open("outputs/results/lstm_config.json", "w") as f:
+        json.dump({
+            "sequence_length": lstm_lag,
+            "hidden_size": lstm_hidden_size,
+            "learning_rate": lstm_learning_rate,
+            "epochs": 200,
+            "validation_rmse": lstm_metrics["Overall_RMSE"],
+        }, f, indent=4)
+
+    pd.DataFrame({
+        "Date": lstm_dates[lstm_val_mask],
+        "Actual_Streamflow_cfs": y_lstm_val,
+        "LSTM_Predicted_Streamflow_cfs": lstm_pred,
+    }).to_csv("outputs/results/lstm_validation_predictions.csv", index=False)
+
     save_plots(
         val["Date"].values,
         y_val,
         ann_pred,
         history
     )
+    save_plots(
+        lstm_dates[lstm_val_mask],
+        y_lstm_val,
+        lstm_pred,
+        lstm_history,
+        out_dir="outputs/plots/lstm",
+        model_name="LSTM",
+    )
 
     print("\n=== ANN RMSE ===")
     print(ann_metrics)
+    print("\n=== LSTM RMSE ===")
+    print(lstm_metrics)
     print("\n=== Model Comparison ===")
     print(comparison.to_string(index=False))
     print("\nOutputs saved under outputs/")
